@@ -13,10 +13,24 @@ import { configPathsFor, describePets, parseArgs } from './options.ts';
 import { DEFAULT_STANDALONE_PORT } from './server.ts';
 
 describe('parseArgs —— 独立模式的命令行契约', () => {
-  test('无参数：默认端口、不体检、不打印用法', () => {
+  test('无参数：默认端口、不体检、不打印用法、宿主为 dsh', () => {
     const parsed = parseArgs([]);
     assert.ok('options' in parsed);
-    assert.deepEqual(parsed.options, { port: DEFAULT_STANDALONE_PORT, check: false, help: false });
+    assert.deepEqual(parsed.options, { port: DEFAULT_STANDALONE_PORT, check: false, help: false, host: 'dsh' });
+  });
+
+  test('--host：只接受 dsh / workbuddy，两种写法等价，非法值报错', () => {
+    const spaced = parseArgs(['--host', 'workbuddy']);
+    const equals = parseArgs(['--host=workbuddy']);
+    assert.ok('options' in spaced && 'options' in equals);
+    assert.equal(spaced.options.host, 'workbuddy');
+    assert.equal(equals.options.host, 'workbuddy');
+
+    for (const argv of [['--host'], ['--host', 'claude'], ['--host=CurSor']]) {
+      const parsed = parseArgs(argv);
+      assert.ok('error' in parsed, JSON.stringify(argv));
+      assert.match(parsed.error, /--host/);
+    }
   });
 
   test('--port 的两种写法等价', () => {

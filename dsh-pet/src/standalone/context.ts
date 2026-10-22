@@ -16,8 +16,12 @@
  *   - `credentials.resolve()` → 恒 `undefined` → 凭证类失败走 `credential-missing`
  *   - `llm.*` → 模型清单为空；生成调用直接抛错 → 碎碎念/对话明确失败，不会静默
  *   - `on(...)` → 不订阅任何事件：独立模式没有 DSH 会话，工作状态因此保持空闲
+ *     （例外：外部宿主注入 `sessionEvents` 时，`session/event` 改由那条总线供给，
+ *      WorkBuddy 的 hook 就是这样把六档工作状态喂进来的，见 ../workbuddy/）
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+
+import type { SessionEventBus } from '../workbuddy/event-bus';
 
 /** 独立模式下余额路由报出的服务商 id（未登记 → `unsupported`，气泡里能看到它） */
 export const STANDALONE_PROVIDER = 'standalone';
@@ -59,6 +63,12 @@ export interface StandaloneContextOptions {
   /** 注入路由收集数组（独立模式先起服务拿到端口，再 `apply`，两者共用同一个数组） */
   routes?: RegisteredRoute[];
   ai?: StandaloneModelService;
+  /**
+   * 外部宿主的会话事件总线（WorkBuddy hook 喂进来的 `session/event`）。
+   * 给了 → `ctx.on('session/event')` 订阅它，插件的工作状态聚合照常工作；
+   * 不给 → 保持"不订阅任何事件"的老口径（工作状态恒空闲）。
+   */
+  sessionEvents?: SessionEventBus;
   authenticatedUrl?: (baseUrl: string) => string;
 }
 
@@ -136,9 +146,16 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
         return undefined;
       }
     },
-    /** 独立模式没有 DSH 会话事件：不订阅，工作状态保持空闲 */
-    on(): () => void {
-      return () => {};
+    /**
+     * 独立模式没有 DSH 会话事件：默认不订阅，工作状态保持空闲。
+     *
+     * 例外是"外部宿主"（WorkBuddy）：它把自己的生命周期 hook 翻译成 `session/event` 形状后
+     * 投进 `sessionEvents` 总线，这里把订阅转发过去。宿主半边的其余代码一行都不用改 ——
+     * 它本来就是在等这个事件源。
+     */
+    on(name: string, handler: (...args: never[]) => unknown): () => void {
+      if (name !== 'session/event' || !options.sessionEvents) return () => {};
+      return options.sessionEvents.on(handler as (session: unknown, event: unknown) => void);
     },
     logger,
     webServer,

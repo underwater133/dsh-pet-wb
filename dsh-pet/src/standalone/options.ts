@@ -11,11 +11,15 @@ import { join } from 'node:path';
 import type { ConfigPaths } from '../host/config';
 import { DEFAULT_STANDALONE_PORT } from './server';
 
+/** 宿主类型：`dsh` = 原来的独立模式；`workbuddy` = 由 WorkBuddy hook 供给会话事件与用量 */
+export type HostKind = 'dsh' | 'workbuddy';
+
 /** 命令行解析结果 */
 export interface CliOptions {
   port: number;
   check: boolean;
   help: boolean;
+  host: HostKind;
 }
 
 /** `--help` 正文 */
@@ -24,14 +28,16 @@ export const USAGE = `dsh-pet 独立模式（不需要 DSH）
 用法：dsh-pet-standalone [选项]
 
 选项：
-  --port <端口>   监听端口（默认 ${DEFAULT_STANDALONE_PORT}；被占用时自动向后顺延）
-  --check         只体检：打印配置来源、宠物清单与 Electron 状态，不启动窗口
-  -h, --help      显示本帮助
+  --port <端口>       监听端口（默认 ${DEFAULT_STANDALONE_PORT}；被占用时自动向后顺延）
+  --host <宿主>       接入的宿主：dsh（默认，不接任何会话事件）| workbuddy
+                      workbuddy = 由 WorkBuddy 的 hooks 供给工作状态
+  --check             只体检：打印配置来源、宠物清单与 Electron 状态，不启动窗口
+  -h, --help          显示本帮助
 
 说明：
   桌宠在独立模式下以「透明置顶小窗」运行；浏览器内浮层需要有 DSH 网页，独立模式不提供。
   对话与碎碎念可在本机 AI 设置页配置 API 后显式启用；未配置时不发送模型请求。
-  余额 / DSH 会话工作状态 / 系统通知仍需要 DSH 宿主。
+  --host workbuddy 时：工作状态来自 hooks（需先装 hooks）；余额与 DSH 系统通知仍不可用。
 `;
 
 /**
@@ -40,13 +46,20 @@ export const USAGE = `dsh-pet 独立模式（不需要 DSH）
  * @returns 选项，或 `{ error }`（调用方打印用法并以 2 退出）
  */
 export function parseArgs(argv: string[]): { options: CliOptions } | { error: string } {
-  const options: CliOptions = { port: DEFAULT_STANDALONE_PORT, check: false, help: false };
+  const options: CliOptions = { port: DEFAULT_STANDALONE_PORT, check: false, help: false, host: 'dsh' };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index] ?? '';
     if (arg === '--check') {
       options.check = true;
     } else if (arg === '-h' || arg === '--help') {
       options.help = true;
+    } else if (arg === '--host' || arg.startsWith('--host=')) {
+      const raw = arg === '--host' ? String(argv[index + 1] ?? '') : arg.slice('--host='.length);
+      if (arg === '--host') index += 1;
+      if (raw !== 'dsh' && raw !== 'workbuddy') {
+        return { error: `--host 只接受 dsh 或 workbuddy，收到 ${JSON.stringify(raw)}` };
+      }
+      options.host = raw;
     } else if (arg === '--port' || arg.startsWith('--port=')) {
       const raw = arg === '--port' ? String(argv[index + 1] ?? '') : arg.slice('--port='.length);
       if (arg === '--port') index += 1;

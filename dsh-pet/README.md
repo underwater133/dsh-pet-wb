@@ -121,6 +121,48 @@ npm run build && npm run standalone   # 仓库里（先构建）
 - **只显示 `display` 含 `desktop`/`both` 的实例**；端口默认 3080；`Ctrl+C` 或 `POST /shutdown` 退出。
 - **与 DSH 内运行可同时开**，但共用 `%APPDATA%\dsh-pet-electron-helper`，可能互相踩缓存（仅告警）。
 
+## 🔌 接 WorkBuddy（工作状态联动）
+
+独立模式的另一个宿主：让桌宠感知 **WorkBuddy 在思考 / 在干活 / 等你确认 / 干完了 / 出错**，
+并按你这台机器上 WorkBuddy 自己的用量库显示本月积分消耗。
+
+```sh
+# 0. 装依赖并**完整构建**（关键：桌面窗口还需要 runtime/electron-helper/shared-core.js，
+#    只跑 npm run bundle 不会生成它 —— 缺了它窗口会在、托盘图标也在，但屏幕上一个像素都没有）
+npm install
+npm run build          # 或分两步：npm run bundle && npm run build:desktop-core
+
+# 1. 把桌宠挂到 WorkBuddy 的 hooks 上（幂等；先备份 settings.json，加 --uninstall 可回滚）
+node scripts/install-workbuddy-hooks.mjs
+
+# 2. 完全退出 WorkBuddy 再启动它（关窗口不算退出：hook 配置是启动时缓存的）
+# 3. 起桌宠，宿主指定为 workbuddy
+node lib/standalone.js --host workbuddy
+```
+
+**工作状态怎么来的**：WorkBuddy 的 hook 事件在**最上游**就被投影成纯结构字段
+（事件名 / 会话 id / 工具名 / 通知类型 / 「最后一句是不是问句」这个布尔），
+`prompt`、`tool_input`、`last_assistant_message` 这些正文当场丢弃、不落盘、不出本机；
+随后翻译成 DSH 的 `session/event` 形状，复用插件原有的六档聚合（多会话优先级仲裁、
+终态过期清理、看门狗兜底）。**七档动画与文案一处未改**：
+
+| WorkBuddy hook                                    | 档位                                        |
+| ------------------------------------------------- | ------------------------------------------- |
+| `UserPromptSubmit`                                | 0 思考                                      |
+| `PreToolUse`                                      | 1 工作                                      |
+| `PostToolUse`                                     | 2 整理                                      |
+| `PermissionRequest` / `Notification(idle_prompt)` | 3 等待                                      |
+| `Stop`                                            | 4 成功（以问句收尾 → 3 等待，因为它在问你） |
+| 会话结束 / 静默超时                               | 清空回空闲                                  |
+
+**余额**：不可用。WorkBuddy 的余额只存在于服务端（界面右上角那个数字），本地没有明文留底，
+取它必须带登录态去调未公开的计费接口 —— 这一块**刻意不做**，独立模式下余额路由照旧返回
+`unsupported`（结构化失败，不假装成功）。
+
+**注意**：hook 属于 WorkBuddy 的未公开实现，随版本可能变化；
+`SessionEnd` 之类的个别事件在部分版本可能不触发（此时靠看门狗兜底，默认 10 分钟，`DSH_PET_WB_IDLE_MS` 可调）。
+每次 hook 都会起一个 node 进程，本机实测约 180ms/次（其中约 150ms 是 node 启动本身）。
+
 ## ⌨️ 斜杠命令
 
 在 DSH 输入框里以 `/` 触发（与其它插件命令同一入口，命令面板可搜）：

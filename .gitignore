@@ -39,6 +39,12 @@ temp/
 dsh-pet/lib/
 dsh-pet/runtime/electron-helper/shared-core.js
 
+# ── 本地工具数据（WorkBuddy 项目记忆/会话，机器相关） ──
+.workbuddy/
+
+# ── 本项目用 pnpm（pnpm-lock.yaml 才是锁文件）；npm 装依赖生成的锁文件不入库 ──
+dsh-pet/package-lock.json
+
 # ── IDE / 编辑器 ──
 .idea/
 .vscode/

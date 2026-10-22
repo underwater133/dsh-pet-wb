@@ -117,13 +117,14 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 
 ## 独立模式（不打开 DSH）
 
-不启动 DSH 时，同一份 `/dsh-pet-7340` 契约由本机服务提供，另外多出三个**挂在服务根上**的端点
-（**不在 `/dsh-pet-7340` 前缀下**）：
+不启动 DSH 时，同一份 `/dsh-pet-7340` 契约由本机服务提供，另外多出几个**挂在服务根上**的端点
+（**不在 `/dsh-pet-7340` 前缀下**；最后一个只在 `--host workbuddy` 时注册）：
 
 | 接口 | 功能 |
 | --- | --- |
-| `GET /`、`GET /health` | 服务与插件信息：名称、插件根与版本、监听端口、已运行秒数 |
+| `GET /`、`GET /health` | 服务与插件信息：名称、插件根与版本、监听端口、已运行秒数（`--host workbuddy` 时另有 `workbuddy: { events, dropped, sessions, lastEventAt }` 计数） |
 | `POST /shutdown` | 优雅停机：释放插件注册的 effect（停止桌面助手、清掉周期定时器）后关闭服务，进程退出码 0 |
+| `POST /wb/hook` | **WorkBuddy hook 投递口**（仅 `--host workbuddy` 时存在）：收 `{event,session_id,tool_name?,notification_type?,ends_with_question?,ts?}`，正文一律丢弃；回 `{ok, accepted}`。需要 `x-dsh-pet-token` |
 
 `/dsh-pet-7340` 下的端点形状不变，但三个依赖 DSH 的接口**明确降级**（结构化失败，不假装成功）：
 `POST /whisper`、`POST /chat` 回 `reason: 'provider-missing'`，`POST /balance` 回 `reason: 'unsupported'`。
