@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: dsh-pet HTTP API
-  version: 0.3.7
+  version: 0.3.8
   summary: DSH 桌宠插件的宿主 HTTP 接口
   description: |
     dsh-pet 的宿主（host）半侧通过 DSH 的 `webServer` 服务注册**一条前缀路由** `/dsh-pet-7340`，
@@ -209,6 +209,71 @@ paths:
           $ref: "#/components/responses/MethodNotAllowed"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /dsh-pet-7340/work-status:
+    post:
+      tags: [Action]
+      operationId: setWorkStatus
+      summary: 外部写入工作状态
+      description: |
+        给外部程序（Codex、脚本、其它插件）一个最小的状态写入点：
+        `POST` 设置固定外部槽 `api` 的档位，`DELETE` 清空回空闲。
+
+        - 只接受 6 个档位；`task` 可选，省略 = 保留上一次，`null` / 空串 = 清空。
+        - 不传 session/seq，不做多写者仲裁或租约；最后写入者生效。
+        - 外部槽与 DSH 会话一起参与现有优先级
+          （waiting > error > working > thinking > result > success）。
+        - `success` / `error` 的气泡 10 秒后自动收起，但状态本身不会自动清；
+          要回空闲必须显式 `DELETE`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state:
+                  type: string
+                  enum: [thinking, working, result, waiting, success, error]
+                task:
+                  description: |
+                    任务详情文案，气泡里显示。`trim()` 后最多 40 个码点；
+                    省略 = 保留原值，`null` 或空串 = 清空。
+                  oneOf:
+                    - type: string
+                    - type: "null"
+      responses:
+        "200":
+          description: 写入被接受；返回当前外部槽的状态与任务文案。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkStatusSnapshot"
+        "400":
+          description: JSON 非法 / state 未知 / task 类型不对或超过 40 个码点。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "413":
+          description: 请求体超过 8 KiB。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Action]
+      operationId: clearWorkStatus
+      summary: 清空外部写入的工作状态
+      description: 清掉外部槽 `api`，桌宠回空闲；幂等（没有外部槽也返回 204）。
+      responses:
+        "204":
+          description: 已清空（或本来就没有外部槽）。
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
 
   /dsh-pet-7340/balance:
     post:
@@ -2473,8 +2538,9 @@ components:
           type: string
           description: |
             展示形态。`windows` = 三窗口用量（百分比，opencode / commandcode）；
-            `money` = 账户金额（DeepSeek 两条路由）。
-          enum: [windows, money]
+            `money` = 账户金额（DeepSeek 两条路由）；
+            `points` = 积分/点数余额（非货币单位，如本地网关自带的额度）。
+          enum: [windows, money, points]
         manual:
           type: boolean
           description: |
@@ -2541,6 +2607,28 @@ components:
                   该币种的档位基准（同币种单位）——余额 ≥ 该值视为未消耗。
                   缺省 = 这个币种没有基准，不参与档位折算（不替它猜一个）。DeepSeek：CNY 20 / USD 5。
                 example: "20"
+        points:
+          type: object
+          description: |
+            points：积分/点数余额（非货币单位）。`unit` 只是拼在数字后面的展示后缀，
+            不参与任何计算（与 `wallets[].currency` 的分工不同：那个是币种代码）。
+            气泡渲染为「余额 800 积分」，不会套货币符号。
+          required: [unit, total]
+          properties:
+            unit:
+              type: string
+              description: 展示单位（如「积分」「点数」）
+              example: 积分
+            total:
+              type: string
+              description: 当前余额（字符串，与上游一致；不做换算、不重算）
+              example: "800"
+            full:
+              type: string
+              description: |
+                档位基准（同 unit 的数值）——余额 ≥ 该值视为未消耗。
+                缺省 = 没有基准，不参与百分比折算、不播档位动画（不替它猜一个）。
+              example: "1000"
 
     BalanceUnavailable:
       type: object
@@ -2575,7 +2663,8 @@ components:
           description: |
             `WorkStatusSnapshot`；`null` = 从未写过。
             由宿主监听 DSH 会话事件（`turn/start`、`tool/call`、`tool/result`、
-            `approval/asked`、`turn/end`）聚合后写入。
+            `approval/asked`、`turn/end`）聚合后写入；也可由 `POST /work-status`
+            从外部写入固定槽 `api`。
           oneOf:
             - $ref: "#/components/schemas/WorkStatusSnapshot"
             - type: "null"

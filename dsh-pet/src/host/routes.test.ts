@@ -43,6 +43,8 @@ let savedHome: string | undefined;
 let savedElectron: string | undefined;
 /** apply() 注册的全部 effect 释放函数（after 里调用：否则常驻定时器会让测试进程不退出） */
 const disposers: Array<() => void> = [];
+/** apply() 通过 ctx.provide 挂出去的服务（宿主半侧的对外 Cordis 面） */
+const provided = new Map<string, unknown>();
 
 /** 最小响应桩：writeHead 记状态码，Writable 收集 body（sendFile 经 pipe 写入） */
 class FakeRes extends Writable {
@@ -102,6 +104,11 @@ before(() => {
       } catch {
         /* 源码形态下内置配置不可达，refreshDesktop 会抛给调用方——这里吞掉，不影响路由注册 */
       }
+    },
+    // 对外 Cordis 服务（第三方注册余额查询）：与 DSH 一致，provide 返回释放函数
+    provide: (name: string, value: unknown) => {
+      provided.set(name, value);
+      return noop;
     },
     on: () => noop,
     webServer: { register: (spec: { handler: typeof handler }) => ((handler = spec.handler), noop) },
@@ -283,12 +290,16 @@ describe('轮询统一后删掉的旧端点 —— 不得复活', () => {
   // 保留这条守卫是为了防止"顺手又加回一个 /xxx 轮询端点"（那正是这次要消灭的东西）。
   // 注意 /broadcast 不在此列：它以**新的语义**回来了（POST 写入端点，见下方专门的分组），
   // 这里的守卫只要求它不再是一个 GET 读端点。
-  for (const path of ['/dsh-pet-7340/work-status', '/dsh-pet-7340/notify']) {
+  for (const path of ['/dsh-pet-7340/notify']) {
     test(`${path} 已删除（GET 不再是端点）`, async () => {
       const r = await call(path);
       assert.notEqual(r.status, 200, `${path} 应已并入 /state`);
     });
   }
+
+  test('/work-status 的 GET 读端点已删除（现在是 POST/DELETE 写端点）', async () => {
+    assert.equal((await call('/dsh-pet-7340/work-status')).status, 405);
+  });
 
   test('/broadcast 的 GET 读端点已删除（数据只有 /state 一个出口）', async () => {
     assert.equal((await call('/dsh-pet-7340/broadcast')).status, 405);
@@ -721,5 +732,94 @@ describe('/pet-display —— 业务失败一律 200 + ok:false（不用 400/404
     const body = JSON.parse(r.body) as { ok: boolean; reason: string };
     assert.equal(body.ok, false);
     assert.equal(body.reason, 'bad-request');
+  });
+});
+
+describe('/work-status —— 外部写入工作状态', () => {
+  type StateBody = { sections: { workStatus: { data: { state: string | null; task: string | null } } } };
+  const work = async () => JSON.parse((await call('/dsh-pet-7340/state')).body) as StateBody;
+
+  test('POST 写入 state/task，/state 同步可见', async () => {
+    const r = await call('/dsh-pet-7340/work-status', 'POST', JSON.stringify({ state: 'working', task: '编译中' }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(JSON.parse(r.body), { state: 'working', task: '编译中' });
+    assert.deepEqual((await work()).sections.workStatus.data, { state: 'working', task: '编译中' });
+  });
+
+  test('省略 task 保留上一次；显式 null / 空串清空', async () => {
+    await call('/dsh-pet-7340/work-status', 'POST', JSON.stringify({ state: 'working', task: '保留我' }));
+
+    const keep = await call('/dsh-pet-7340/work-status', 'POST', JSON.stringify({ state: 'result' }));
+    assert.deepEqual(JSON.parse(keep.body), { state: 'result', task: '保留我' });
+
+    const nulled = await call('/dsh-pet-7340/work-status', 'POST', JSON.stringify({ state: 'working', task: null }));
+    assert.deepEqual(JSON.parse(nulled.body), { state: 'working', task: null });
+
+    const emptied = await call('/dsh-pet-7340/work-status', 'POST', JSON.stringify({ state: 'working', task: '   ' }));
+    assert.deepEqual(JSON.parse(emptied.body), { state: 'working', task: null });
+  });
+
+  test('DELETE 清空回空闲且幂等', async () => {
+    await call('/dsh-pet-7340/work-status', 'POST', JSON.stringify({ state: 'success', task: '完成' }));
+
+    const del = await call('/dsh-pet-7340/work-status', 'DELETE');
+    assert.equal(del.status, 204);
+    assert.equal(del.body, '');
+    assert.deepEqual((await work()).sections.workStatus.data, { state: null, task: null });
+
+    const again = await call('/dsh-pet-7340/work-status', 'DELETE');
+    assert.equal(again.status, 204);
+  });
+
+  test('非法输入 → 400；GET → 405；body 超限 → 413', async () => {
+    const bad = [
+      '{',
+      JSON.stringify({ state: 'nope' }),
+      JSON.stringify({ state: 'working', task: 42 }),
+      JSON.stringify({ state: 'working', task: 'x'.repeat(41) }),
+    ];
+    for (const body of bad) {
+      const r = await call('/dsh-pet-7340/work-status', 'POST', body);
+      assert.equal(r.status, 400, body.slice(0, 60));
+    }
+    assert.equal((await call('/dsh-pet-7340/work-status')).status, 405);
+    const big = await call(
+      '/dsh-pet-7340/work-status',
+      'POST',
+      JSON.stringify({ state: 'working', task: 'x'.repeat(9000) }),
+    );
+    assert.equal(big.status, 413);
+  });
+});
+
+describe('对外 Cordis 服务 —— 第三方注册余额查询', () => {
+  interface BalanceApi {
+    register: (def: { id: string; fetch: (ctx: { provider: string }) => Promise<unknown> }) => () => void;
+    list: () => { builtin: string[]; external: string[] };
+  }
+  const api = (): BalanceApi => {
+    const value = provided.get('petApi7340') as { balance?: BalanceApi } | undefined;
+    assert.ok(value?.balance, 'apply() 必须挂出 petApi7340.balance');
+    return value.balance;
+  };
+
+  test('挂出的是 register + list（没有 unregister：注销走 register 的返回值）', () => {
+    const balance = api() as unknown as Record<string, unknown>;
+    assert.equal(typeof balance.register, 'function');
+    assert.equal(typeof balance.list, 'function');
+    assert.equal('unregister' in balance, false);
+  });
+
+  test('通过服务注册后 list 可见，调用 disposer 后消失', () => {
+    const dispose = api().register({
+      id: 'route-test-plugin',
+      fetch: async ({ provider }) => ({ ok: true, provider, shape: 'points', data: { unit: '积分', total: '1' } }),
+    });
+    try {
+      assert.ok(api().list().external.includes('route-test-plugin'));
+    } finally {
+      dispose();
+    }
+    assert.equal(api().list().external.includes('route-test-plugin'), false);
   });
 });

@@ -7,6 +7,12 @@
  */
 'use strict';
 
+// 左键 + 修饰键 = 「呼出 DSH」的快捷键。Windows / Linux 用 Ctrl；macOS 上 Ctrl+左键是系统右键
+//（先触发 contextmenu、拿不到 click），所以改用 Cmd（⌘）。快捷键文案按平台取，判定统一走 isOpenShortcut。
+const OPEN_SHORTCUT_HINT = /Mac/i.test(navigator.platform || navigator.userAgent) ? 'Cmd+左键' : 'Ctrl+左键';
+/** 本次点击是否按住了「呼出 DSH」的修饰键（Ctrl / Cmd） */
+const isOpenShortcut = (e) => !!(e && (e.ctrlKey || e.metaKey));
+
 // ---------- 单只宠物（行为与浏览器 PetCard 一致；纯逻辑来自 src/shared） ----------
 class PetSprite {
   constructor(pet) {
@@ -84,6 +90,9 @@ class PetSprite {
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
     this.justDragged = false;
+    // 上一次**按下**的时刻（0 = 还没记过）：弹弓的判定依据是「两次按下之间隔了多久」。
+    // 按下记、按下比——这次按了多久、什么时候松手都不参与判定（见 onPointerDown）。
+    this.lastPressAt = 0;
     this._interactive = null; // 已上报的可交互状态（setInteractive 去重用）
     this._inputBusy = null; // 已上报的"正在用输入"状态（syncInputBusy 去重用）
     // 拖拽抛掷物理（与浏览器 pet.ts 同构；纯计算在 shared-core S.*）：
@@ -221,7 +230,7 @@ class PetSprite {
     this.inputRegionMutation.observe(document.body, { childList: true, subtree: true });
     this.hit.addEventListener('pointerdown', (e) => this.onPointerDown(e), { signal: ac.signal });
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
-    this.hit.addEventListener('click', () => this.onClick(), { signal: ac.signal });
+    this.hit.addEventListener('click', (e) => this.onClick(e), { signal: ac.signal });
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -935,7 +944,14 @@ class PetSprite {
       const fallingVy = state.vy; // 本帧积分前的竖直速度（正=下落）：即落地冲击速度
       // 每帧重取：显示器变化时 relayout() 会让缓存失效，res.screen 必须与这一份对应
       const sp = this.throwSpaceOf();
-      const res = S.throwStepRegion(state, dt, sp, this.physics, lockScreen);
+      // 细分积分：弹弓没有速度上限，一帧可能跨过上百 px——不拆会跳过「落地/反弹」那几帧，
+      // Q 弹、地面摩擦与 atRest 判定都会漏。普通甩抛每帧位移远小于 SUBSTEP_PX，
+      // 这里算出 1 步，与旧实现的单步积分逐位相同。
+      const substeps = S.throwSubsteps(state.vx, state.vy, dt);
+      let res = S.throwStepRegion(state, dt / substeps, sp, this.physics, lockScreen);
+      for (let i = 1; i < substeps && !res.atRest; i++) {
+        res = S.throwStepRegion(res, dt / substeps, sp, this.physics, lockScreen);
+      }
       state = { x: res.x, y: res.y, vx: res.vx, vy: res.vy };
       this.throwState = state;
       // 上报飞行状态（节流 ~30ms）：主进程 broker 汇聚后广播，其它窗口用它做跨窗碰撞检测；
@@ -1176,7 +1192,8 @@ class PetSprite {
     // 在飞行中且达标 → 立即粒子爆发 + 积分弹窗；pressScoreFired 标记本次按下已触发，
     // 松开的 click 据此不再重复弹、也不再播普通点击动画（与浏览器同构）。
     this.pressScoreFired = false;
-    if (grabState) {
+    // 修饰键+点击是「呼出 DSH」快捷键（见 onClick）：不弹积分，避免快捷键顺手刷分
+    if (grabState && !isOpenShortcut(e)) {
       const grabSpeed = Math.hypot(grabState.vx, grabState.vy);
       if (grabSpeed >= S.SCORE_MIN_SPEED) {
         this.pressScoreFired = true;
@@ -1206,6 +1223,12 @@ class PetSprite {
     this.stopDragFollow();
     this.stopMove();
     this.dragTrail = [];
+    // 弹弓：**按下时**记时刻、**按下时**比对——间隔 = 两次按下之间的距离，
+    // 因此这次拖了多久、什么时候松手都不影响判定（拖十分钟也早已超出窗口）。
+    // 没有「待拉」状态、没有超时清理（见 shared-core 的弹弓换算）。
+    const pressNow = performance.now();
+    const sling = pressNow - this.lastPressAt < S.SLINGSHOT_DOUBLE_MS;
+    this.lastPressAt = sling ? 0 : pressNow; // 命中就清掉，免得连点三下弹两次
     this.hit.classList.add('dragging');
     // 收起悬浮提示：拖拽期间窗口逐帧跟随光标，指针始终在身体内、onMouseMove 的 inBody 恒为真，
     // 不主动收就会让提示跟着宠物一路飘（松开后由 onPointerUp 按指针位置复位）
@@ -1231,6 +1254,11 @@ class PetSprite {
     // 拖拽中宠物滞后于光标，光标可能跑到窗口外→窗口翻回穿透→本窗口收不到 pointermove/pointerup
     // （宠物"飞"出去，见 pointer-target.js）。这里上报"我正在用输入"，主进程据此绝不翻回穿透。
     this.syncInputBusy();
+    // 弹弓：把「本次是否拉弓」与按下时的宠物中心（anchorX/Y）补进同一次拖拽状态。
+    // 放在上报之后是为了不稀释上面那条源码守卫（它要求 busy 必须在建立状态后紧跟着上报）。
+    this.dragState.sling = sling;
+    this.dragState.anchorX = this.pos.x + this.halfW;
+    this.dragState.anchorY = this.pos.y + this.halfH;
     // 注意：舞台「拍平」（去掉 translateY(bottomPad)）不能在这里做——
     // 纯点击（按下即松开）会让人物瞬移上移再落下。与浏览器一致：只有拖拽超过阈值才拍平。
   }
@@ -1311,30 +1339,57 @@ class PetSprite {
       // 跟手滞后时落点跟随宠物实际位置，与浏览器 boxPx 同语义）
       const px = this.pos.x;
       const py = this.pos.y;
-      // 初速估算：够快就抛掷（重力+边缘反弹+落地摩擦），否则原地放下
-      const vel = S.estimateReleaseVelocity(this.dragTrail, performance.now(), this.physics);
-      this.dragTrail = [];
-      if (vel) {
+      if (d.sling) {
+        // 弹弓：力度 = **拉距**（与手速无关），方向 = 拉的**反方向**。
+        // 拉向量用宠物实际中心算（弹簧跟随有滞后，用户看到的是宠物被拉出去多远）。
+        // 之后与甩抛走同一条 startThrow：重力/反弹/摩擦/落地 Q 弹/跨窗互撞/多屏完全复用。
+        const pullX = px + this.halfW - d.anchorX;
+        const pullY = py + this.halfH - d.anchorY;
+        const dist = Math.hypot(pullX, pullY);
+        const rawPower = S.slingshotPower(dist, this.size);
+        const v = S.slingshotVelocity(S.pullAngle(pullX, pullY), rawPower, this.physics.throwPower);
+        this.dragTrail = [];
         console.log(
           '[dsh-pet] ' +
             new Date().toTimeString().slice(0, 8) +
             ' pet=' +
             this.pet.id +
-            ' release vx=' +
-            Math.round(vel.vx) +
+            ' sling dist=' +
+            Math.round(dist) +
+            ' power=' +
+            rawPower.toFixed(2) +
+            ' vx=' +
+            Math.round(v.vx) +
             ' vy=' +
-            Math.round(vel.vy) +
-            ' |v|=' +
-            Math.round(Math.hypot(vel.vx, vel.vy)),
+            Math.round(v.vy),
         );
-        this.startThrow(px, py, vel.vx, vel.vy);
+        this.startThrow(px, py, v.vx, v.vy);
       } else {
-        // customPos 语义 = 宠物**中心**比例（position() 用 rx*W - halfW 还原左上角；
-        // startThrow 落定也按同一公式存），松手无边界夹取
-        this.customPos = { rx: (px + this.halfW) / VIEW.w, ry: (py + this.halfH) / VIEW.h };
-        this.position();
-        // 释放后的最终窗口位置（position() 换算后，松手无夹取），冒烟断言"释放不位移"用
-        window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
+        // 初速估算：够快就抛掷（重力+边缘反弹+落地摩擦），否则原地放下
+        const vel = S.estimateReleaseVelocity(this.dragTrail, performance.now(), this.physics);
+        this.dragTrail = [];
+        if (vel) {
+          console.log(
+            '[dsh-pet] ' +
+              new Date().toTimeString().slice(0, 8) +
+              ' pet=' +
+              this.pet.id +
+              ' release vx=' +
+              Math.round(vel.vx) +
+              ' vy=' +
+              Math.round(vel.vy) +
+              ' |v|=' +
+              Math.round(Math.hypot(vel.vx, vel.vy)),
+          );
+          this.startThrow(px, py, vel.vx, vel.vy);
+        } else {
+          // customPos 语义 = 宠物**中心**比例（position() 用 rx*W - halfW 还原左上角；
+          // startThrow 落定也按同一公式存），松手无边界夹取
+          this.customPos = { rx: (px + this.halfW) / VIEW.w, ry: (py + this.halfH) / VIEW.h };
+          this.position();
+          // 释放后的最终窗口位置（position() 换算后，松手无夹取），冒烟断言"释放不位移"用
+          window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
+        }
       }
     }
   }
@@ -1507,9 +1562,17 @@ class PetSprite {
     if (this.tipOn) this.renderTip();
   }
 
-  onClick() {
+  onClick(e) {
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged) return;
+    // Ctrl（macOS 为 Cmd）+ 左键 = 呼出 DSH：与右键菜单「打开网站 / 打开软件」同一动作
+    //（open-site），只是它的快捷键——不播点击动画、也不参与积分，避免"摸一下宠物"变成"开窗口"。
+    if (isOpenShortcut(e)) {
+      this.stopThrow();
+      this.stopMove();
+      if (window.petBridge) window.petBridge.openDshSite(ORIGIN);
+      return;
+    }
     // 积分判定已在 onPointerDown（按下即触发）完成：
     // 本次按下已触发过积分 → 只收手停住、**不**再播普通点击动画（粒子+弹窗即反馈，与浏览器同构）
     if (this.pressScoreFired) {
@@ -1562,7 +1625,13 @@ class PetSprite {
     // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置 / 重载配置）+ 共享菜单树（动作→分类→具体动画）
     // 碎碎念/对话项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
     // 首项文案随宿主形态变（OPEN_TARGET）：宿主是 DSH 桌面应用时点是"唤起桌面应用窗口"，仍叫「打开网站」会误导
-    const tools = [{ label: OPEN_TARGET === 'desktop' ? '打开 DeepSeek Harness' : '打开网站', action: 'open-site' }];
+    const tools = [
+      {
+        label: OPEN_TARGET === 'desktop' ? '打开软件' : '打开网站',
+        action: 'open-site',
+        hint: OPEN_SHORTCUT_HINT,
+      },
+    ];
     // 「查看余额」无条件显示（与浏览器端一致）：关了 balanceEnabled 的宠物也能点——手动请求不受开关限制
     //（该开关只关自动轮询与档位动画），点了一定给答复。
     tools.push({ label: '查看余额', action: 'show-balance' });
