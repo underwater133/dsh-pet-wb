@@ -47,6 +47,7 @@ try {
 }
 const { app, BrowserWindow, ipcMain, screen, shell, protocol, Tray, Menu, nativeImage } = electronApi;
 const path = require('node:path');
+const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { readFileSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
@@ -692,6 +693,61 @@ const toggleDisplay = (display) =>
 
 let tray = null;
 
+/** 宿主 runtime 清单（与 scripts/workbuddy-hook.mjs 同一口径：DSH_HOME 优先，否则 ~/.dsh） */
+function readRuntimeManifest() {
+  const home =
+    process.env.DSH_HOME && process.env.DSH_HOME.trim().length > 0
+      ? process.env.DSH_HOME.trim()
+      : path.join(os.homedir(), '.dsh');
+  const file = process.env.DSH_PET_WB_RUNTIME || path.join(home, 'dsh-pet', 'standalone-runtime.json');
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    const port = Number(parsed && parsed.port);
+    const token = typeof (parsed && parsed.token) === 'string' ? parsed.token : '';
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+    return { port, token };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 托盘里的「退出桌宠」：必须让**宿主**退出，不能只 app.quit()。
+ *
+ * 本进程只是宿主（standalone / DSH）拉起的渲染子进程，单独关窗会有两个后果：
+ *   1. 宿主的 helper 重启逻辑会把它再拉起来（src/host/helper-process.ts 的 exited → restarting）；
+ *   2. 即使没被拉起，那个仍在监听 3080、仍占着 runtime 的 node 进程会留下 —— 下次启动
+ *      反而被判成「已经在运行」，用户看到的是「点了退出，再点没反应」。
+ * 所以优先请求宿主自己的 POST /shutdown（带 runtime 里的能力令牌：它会关本进程、删 runtime、
+ * 退服务）。只有拿不到 runtime（如 DSH 内运行、没有独立清单）或请求失败时，才退化成只关自己。
+ */
+function trayQuit() {
+  const runtime = readRuntimeManifest();
+  if (!runtime) {
+    app.quit();
+    return;
+  }
+  // 宿主收到 200 会主动关本进程；留 4 秒兜底，别让托盘变成关不掉的状态
+  const bail = setTimeout(() => app.quit(), 4000);
+  if (bail.unref) bail.unref();
+  fetch(`http://127.0.0.1:${runtime.port}/shutdown`, {
+    method: 'POST',
+    headers: runtime.token ? { 'x-dsh-pet-token': runtime.token } : {},
+  })
+    .then(() => {
+      // 正常路径：宿主正在关我们，什么都不用做（本进程会被它收掉）
+    })
+    .catch((e) => {
+      clearTimeout(bail);
+      console.error(
+        '[dsh-pet-desktop-helper] tray quit failed:',
+        String(e && e.message ? e.message : e),
+      );
+      app.quit();
+    });
+}
+
+
 /** 写回某只宠物的 display：宿主写完配置会重启本进程，响应可能永远不回（同 sprite.js 的 setPetDisplay） */
 function traySetPetDisplay(id, display) {
   hostRequest('POST', PET_ROUTE + '/pet-display', JSON.stringify({ id, display })).catch((e) => {
@@ -742,14 +798,17 @@ async function startTray() {
     tray = new Tray(trayIcon());
     tray.setToolTip('dsh-pet 桌面宠物');
     tray.setContextMenu(
-      Menu.buildFromTemplate(
-        pets.map((pet) => ({
+      Menu.buildFromTemplate([
+        ...pets.map((pet) => ({
           label: pet.name || pet.id,
           type: 'checkbox',
           checked: isDesktopDisplay(pet.display),
           click: () => traySetPetDisplay(pet.id, toggleDisplay(pet.display)),
         })),
-      ),
+        // 退出项：静默启动后没有控制台可 Ctrl+C，这是唯一不靠任务管理器的退出口
+        { type: 'separator' },
+        { label: '退出桌宠', click: () => trayQuit() },
+      ]),
     );
     // Windows 上 setContextMenu 只接管右键，左键默认什么都不做（macOS 相反：左键即弹菜单）
     if (TRAY_PLATFORM.leftClickPopsMenu) tray.on('click', () => tray.popUpContextMenu());
