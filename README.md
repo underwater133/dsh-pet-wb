@@ -170,15 +170,34 @@ npm install -g dsh-pet        # 必须 npm 装；dsh plugin add 装进 profile�
 dsh-pet-standalone            # http://127.0.0.1:3080/dsh-pet-7340/（占用则顺延）
 dsh-pet-standalone --check    # 只体检
 dsh-pet-standalone --port 3100
+dsh-pet-standalone --host workbuddy   # 接 WorkBuddy 会话状态（先装 hooks，见下）
 
 npm run build && npm run standalone   # 仓库里（先构建）
 ```
 
-- **能用**：动画链、点击/拖拽/甩抛、右键菜单、多开、自定义动画与表情包、pet pack。
+- **`--host`（关键）**：`workbuddy` = 工作状态来自 WorkBuddy hooks（`node scripts/install-workbuddy-hooks.mjs` 安装，装完**完全退出** WorkBuddy 再启动，关窗口不算退出）；`dsh`（默认）**不接任何会话事件**，宠物只会播待机动画——漏了这个参数就会觉得"它不搭理我"。
+- **能用**：动画链、点击/拖拽/甩抛、右键菜单、多开、自定义动画与表情包、pet pack；`--host workbuddy` 下还能跟随会话状态切换工作动画。
 - **不可用**：余额、碎碎念、对话、系统通知——返回带 `reason` 的结构化失败（见 [`API.md`](API.md)）。
 - **配置**：与 DSH 同一份（`$DSH_HOME/dsh-pet/main-config.jsonc` → 包内默认）。
 - **只显示 `display` 含 `desktop`/`both` 的实例**；端口默认 3080；`Ctrl+C` 或 `POST /shutdown` 退出。
 - **与 DSH 内运行可同时开**，但共用 `%APPDATA%\dsh-pet-electron-helper`，可能互相踩缓存（仅告警）。
+
+### 一键启动（Windows，仓库自带）
+
+不想每次敲命令、想把它当普通桌面应用用，可以直接双击仓库里的启停脚本：
+
+| 文件 | 作用 |
+| --- | --- |
+| `dsh-pet/scripts/start-pet.vbs` | **双击入口**：隐藏窗口启动，不留黑框 |
+| `dsh-pet/scripts/start-pet.ps1` | 实际逻辑：体检 → 启动 → 首次自动在桌面建「桌宠」快捷方式 |
+| `dsh-pet/scripts/stop-pet.vbs` / `stop-pet.ps1` | 双击停止：优先 `POST /shutdown`（带能力令牌），服务无响应才按 pid 强杀 |
+
+- **首次双击 `start-pet.vbs`**：桌面会生成带图标的「桌宠」快捷方式，之后双击快捷方式即可；已经跑着时不会再拉第二份（避免抢端口 / 踩 Electron 缓存）。
+- **默认 `--host workbuddy`**：脚本启动时自动带上宿主参数，并检查 `~/.workbuddy/settings.json` 里的 hooks（未安装会直接提示安装命令），所以双击启动就能跟随 WorkBuddy 的会话状态；要用纯独立模式可加 `-HostKind dsh`。
+- **零绝对路径**：包目录按脚本位置推导，桌面取系统 `Desktop`，`DSH_HOME` 读环境变量（缺省 `~/.dsh`）。仓库移动到任何目录、拷到另一台机器（带上 Node ≥ 18）都能直接用。
+- **自检与排错**：`start-pet.ps1 -Check` 只体检不启动（会打印宿主模式与 hooks 条数）；`-NoLaunch` 只补快捷方式不启动；`-ShortcutOnly` 只补桌面图标；日志追加在 `dsh-pet/standalone.log`。缺 `lib/standalone.js`、缺 node、Electron 未缓存都会给出明确提示而不是静默失败。
+- **托盘退出**：桌面窗运行时系统托盘有 dsh-pet 图标，右键菜单列出全部宠物（勾选 = 当前在桌面显示），底部「**退出桌宠**」会请求宿主 `POST /shutdown`，把 node 服务、Electron 窗和 `standalone-runtime.json` 一起收掉。只关窗不行——宿主的重启逻辑会把 helper 再拉起来，还留下占着 3080 的进程，下次启动反而被判「已经在运行」。
+- **只随仓库分发**：npm 包白名单不含这几个脚本，`npm install -g` 的用户仍用 `dsh-pet-standalone`；macOS / Linux 也没有 `.vbs` 宿主，同样走 CLI。
 
 ## ⚙️ 余额展示（Balance）
 

@@ -39,6 +39,10 @@ temp/
 dsh-pet/lib/
 dsh-pet/runtime/electron-helper/shared-core.js
 
+# ── dsh-pet 启停器（scripts/start-pet.*、stop-pet.*）的本地运行产物 ──
+dsh-pet/standalone.log
+dsh-pet/scripts/.pet-icon.ico
+
 # ── 本地工具数据（WorkBuddy 项目记忆/会话，机器相关） ──
 .workbuddy/
 
