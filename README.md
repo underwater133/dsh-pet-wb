@@ -16,15 +16,15 @@
 | --- | --- |
 | 上游项目 | [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)（作者 PC2005-cloud） |
 | 本仓库 | [underwater133/dsh-pet-wb](https://github.com/underwater133/dsh-pet-wb) |
-| 基线版本 | v0.3.8（上游 `df60ac3`） |
+| 基线版本 | 上游 `main@dfc0396`（v0.3.8 + 2026-10-25 前全部提交） |
 | 许可 | MIT，版权归上游作者，见 [LICENSE](LICENSE) |
 
 **功能全集看上游**：动画池、点击/拖拽/甩抛、气泡与碎碎念、对话、余额展示、pet pack、多开、桌面透明窗……
-这些本文档不重复，只说明本仓库改了什么、怎么用。包内还有一份更细的 [`dsh-pet/README.md`](dsh-pet/README.md)。
+这些本文档不重复，只说明本仓库改了什么、怎么用。配置项见 [`CONFIG.md`](CONFIG.md)，自己造宠物见 [`MAKE-YOUR-OWN-PET.md`](MAKE-YOUR-OWN-PET.md)，包内还有一份 [`dsh-pet/README.md`](dsh-pet/README.md)。
 
 ## 🔧 本仓库改了什么
 
-相对上游约 **20 个文件、2000 行上下**，集中在三块：
+相对上游 **25 个文件、+2016 / −426**，集中在三块：
 
 ### 1. WorkBuddy 工作状态联动（新增 `dsh-pet/src/workbuddy/`）
 
@@ -61,14 +61,15 @@
 | 改动 | 文件 | 说明 |
 | --- | --- | --- |
 | 一键启停器 | `dsh-pet/scripts/` 下的 `start-pet.ps1` / `.vbs`、`stop-pet.ps1` / `.vbs` | 隐藏窗口启动、首次自动建桌面快捷方式、体检 node/Electron/配置/hooks |
-| 托盘退出 | `dsh-pet/runtime/electron-helper/main.js` | 托盘右键菜单新增「退出桌宠」 |
 
 启停器的几个关键点：
 
 - **零绝对路径**：包目录按脚本位置推导、桌面取系统 `Desktop`、`DSH_HOME` 读环境变量（缺省 `~/.dsh`）——仓库搬到哪、拷给谁都能用；
 - **默认带 `--host workbuddy`**，并检查 hooks 是否已装（未装直接打印安装命令）；
 - **快捷方式自愈**：删掉桌面图标后，跑一次启动器就补回来（包括宠物已经在跑的情况）；
-- **退出必须走宿主**：托盘「退出桌宠」是带令牌 `POST /shutdown`，把 node 服务、Electron 窗、`standalone-runtime.json` 一起收掉。只 `app.quit()` 会被宿主的 helper 重启逻辑拉回来，还留下占着 3080 的进程，下次启动反而被判「已经在运行」。
+- **退出交给上游**：托盘「退出」是上游能力（`GET/POST /dsh-pet-7340/quit` + `trayEnabled` 开关，issue #178），BRIDGE 模式下由宿主决定能否退，避免 helper 自己退了被当崩溃重启。本 fork 早期曾自带一套 `POST /shutdown` 的托盘退出，同步上游后已删除——只在启停器里保留一个 `stop-pet.vbs` 作为托盘之外的第二出口。
+
+> 同步到 `dfc0396` 后，上游已自带托盘退出、日志落盘、托盘开关、单进程桌面应用与音效；本 fork 不再维护这些的本地实现。
 
 ## 🚀 快速开始（Windows + WorkBuddy）
 
@@ -122,8 +123,10 @@ node scripts\install-workbuddy-hooks.mjs
 
 ```sh
 git fetch upstream
-git merge upstream/main      # 或 rebase；冲突基本只会在 README 与 runtime/electron-helper/main.js
+git merge upstream/main      # 冲突基本只会在 README 与 standalone 接线（cli / context / options）
 ```
+
+合并原则：**能跟上游就跟，本地只留 WorkBuddy 适配**。上一轮同步（`dfc0396`）就把本 fork 自带的托盘退出删掉了——上游的 `/quit` 方案更完整，没必要维护两套。
 
 本仓库的包名是 **`dsh-pet-wb`**（与上游的 `dsh-pet` 区分开），可以独立 `npm publish`，不会覆盖上游的包。
 唯一残留的同名点是 `bin`：命令仍叫 `dsh-pet-standalone`，与上游同时全局安装时会互相覆盖 PATH 上的同名命令——需要并存就先把这里改成 `dsh-pet-wb-standalone`。

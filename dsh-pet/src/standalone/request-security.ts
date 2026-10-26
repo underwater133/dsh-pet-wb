@@ -1,27 +1,35 @@
+/**
+ * 本机 HTTP 的访问边界：回环 Host 校验、CSRF 校验与进程能力令牌。
+ *
+ * 负责判定请求能否进入路由，并清掉上游写出的宽 CORS 头；不处理业务语义。
+ * 必须始终成立：只接受当前回环地址；令牌只出现在启动清单与请求头，绝不进日志或响应。
+ * @module dsh-pet/src/standalone/request-security
+ */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
+/** 请求安全门面。 */
 export interface RequestSecurity {
-  /** Process capability: private launcher manifest only, never an HTTP response or log. */
+  /** 进程能力令牌，只写入本机启动清单，绝不进 HTTP 响应或日志。 */
   readonly token: string;
+  /** 生成带令牌的设置页地址。 */
   authenticatedUrl(baseUrl: string): string;
-  authorize(req: IncomingMessage, res: ServerResponse): boolean;
+  /** 判定请求是否放行；拒绝时已经写好响应。 */
+  authorize(req: IncomingMessage, res: ServerResponse, allowFileOrigin?: boolean): boolean;
 }
 
+/** 回一个结构化错误并返回 false，便于调用方直接 return。 */
 export function rejectRequest(res: ServerResponse, status: number, error: string): false {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(JSON.stringify({ error }));
   return false;
 }
 
+/** 无需令牌的只读路径；写操作与敏感路径必须带令牌。 */
 function publicRead(req: IncomingMessage): boolean {
+  // 插件在分发前会解码路径，鉴权必须用同一种拼写判断。
+  const path = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
-  let path: string;
-  try {
-    path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
-  } catch {
-    return false;
-  }
   if (['/standalone-ai/settings', '/shutdown'].includes(path)) return false;
   if (/^\/dsh-pet-\d+\/(?:whisper|chat)(?:\/|$)/.test(path)) return false;
   return (
@@ -30,7 +38,7 @@ function publicRead(req: IncomingMessage): boolean {
   );
 }
 
-/** Origin/Fetch-Metadata are CSRF checks; the custom capability header also excludes HTML forms. */
+/** 创建请求安全门面。 */
 export function createRequestSecurity(): RequestSecurity {
   const token = randomBytes(32).toString('base64url');
   return {
@@ -47,24 +55,29 @@ export function createRequestSecurity(): RequestSecurity {
       }
       return `${base.origin}/standalone-ai/#token=${token}`;
     },
-    authorize(req, res) {
+    authorize(req, res, allowFileOrigin = false) {
       const host = req.headers.host;
       const port = req.socket.localPort;
       if (!port || (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`)) {
         return rejectRequest(res, 403, '仅允许当前本机地址');
       }
+      // 文件页渲染器也要带令牌：沙箱网页同样会发来 null 来源。
+      // 同一渲染器加载媒体时可能完全不带 Origin，只有这种情况才放行。
+      const fileOrigin = allowFileOrigin && (req.headers.origin === 'null' || req.headers.origin === undefined);
       if (
-        (req.headers.origin !== undefined && req.headers.origin !== `http://${host}`) ||
-        req.headers['sec-fetch-site'] === 'cross-site'
+        !fileOrigin &&
+        ((req.headers.origin !== undefined && req.headers.origin !== `http://${host}`) ||
+          req.headers['sec-fetch-site'] === 'cross-site')
       ) {
         return rejectRequest(res, 403, '不允许跨站请求');
       }
       try {
-        if (publicRead(req)) return true;
+        if (publicRead(req) && !fileOrigin) return true;
       } catch {
         return rejectRequest(res, 400, '请求地址无效');
       }
       const supplied = req.headers['x-dsh-pet-token'];
+      // 先按固定形状校验，再走定时安全比较，避免长度与内容泄漏。
       if (
         typeof supplied !== 'string' ||
         !/^[A-Za-z0-9_-]{43}$/.test(supplied) ||
@@ -77,7 +90,7 @@ export function createRequestSecurity(): RequestSecurity {
   };
 }
 
-/** Upstream plugin handlers write wildcard CORS; remove it at the actual HTTP boundary. */
+/** 清掉上游写出的宽 CORS 头，并补上安全响应头。 */
 export function secureResponse(res: ServerResponse, pathname?: string): void {
   const writeHead = res.writeHead.bind(res);
   const isPublicOp = pathname === '/' || pathname === '/health';

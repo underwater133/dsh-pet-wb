@@ -2,12 +2,12 @@
  * 桌面 helper「点击穿透兜底通道」的判定测试（采纳 issue #55 报告者的补丁）。
  *
  * 背景：窗口默认整窗点击穿透，只靠 Electron 的 forward 低级鼠标钩子把 mousemove 转发进渲染端做命中
- * 判定——**整条链路只有一个入口**。该钩子在 Windows 上会静默失效（回调超时被系统摘掉 / 被别的软件
+ * 判定——整条链路只有一个入口。该钩子在 Windows 上会静默失效（回调超时被系统摘掉 / 被别的软件
  * 的钩子干扰），失效后没有任何退路：光标悬浮不触发手套光标、拖不动、点击与右键全无反应。
- * 报告者的修法：主进程按**真实光标位置**独立判定并翻转，不依赖那条转发链路。
+ * 报告者的修法：主进程按真实光标位置独立判定并翻转，不依赖那条转发链路。
  *
  * 本文件把三件事钉住：
- *   ① 判定规则（宠物身上=可交互；窗口余量区=**保持当前**，菜单/弹窗才点得到；窗外=穿透）；
+ *   ① 判定规则（宠物身上=可交互；窗口余量区=保持当前，菜单/弹窗才点得到；窗外=穿透）；
  *   ② 几何：窗口矩形 → 宠物身体命中区（必须与渲染端 sprite.js 的命中判定同源，否则两条通道打架）；
  *   ③ 源码守卫：helper 的 main.js 里必须有兜底显示与兜底轮询（Electron 起不来，只能读源码断言）。
  *
@@ -220,7 +220,12 @@ describe('源码守卫 —— helper 的两个兜底必须在位', () => {
   const main = readSource(helper + 'main.js');
 
   test('#55-1 兜底显示：ready-to-show 之外还要有"加载完成后仍未显示就 show"', () => {
-    assert.ok(/once\('ready-to-show', \(\) => win\.showInactive\(\)\)/.test(main), '显示不得抢其它应用焦点');
+    // 回调可能是单行 `() => win.showInactive()`，也可能多行（多行时先 keepOffTaskbar 再 show）：
+    // 只约束"回调内部最终用 showInactive、不抢焦点"，不约束写法本身。
+    assert.ok(
+      /once\('ready-to-show', \(\) => \{?[\s\S]*?win\.showInactive\(\)/.test(main),
+      '显示不得抢其它应用焦点',
+    );
     assert.ok(
       /once\('did-finish-load'/.test(main),
       '必须有 did-finish-load 兜底（paintWhenInitiallyHidden:false 时 ready-to-show 永不触发）',

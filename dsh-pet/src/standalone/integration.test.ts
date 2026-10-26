@@ -1,10 +1,10 @@
 /**
- * 端到端契约：伪 ctx + **真实 apply** + 真实 `node:http` 服务。
+ * 端到端契约：伪 ctx + 真实 apply + 真实 `node:http` 服务。
  *
  * 这一层回答"独立模式到底有没有把插件自己的宿主半边跑起来"，并钉住三件事：
  *   1. `apply` 注册的路由前缀确实被独立服务接管 —— 只有一份路由表，没有第二套实现；
  *   2. 不依赖包内素材的端点与 DSH 内同形（`/state`、`/models`、`/config/meta` 的路径口径）；
- *   3. 路径安全与"配置不可达"的口径经**真实 HTTP** 仍然成立（独立服务不重写 URL、不吞异常）。
+ *   3. 路径安全与"配置不可达"的口径经真实 HTTP 仍然成立（独立服务不重写 URL、不吞异常）。
  *
  * 覆盖范围的限制与 `routes.test.ts` 相同：源码形态下包根解析成 `<pkg>/src`，
  * 包内 `assets/config.jsonc` 不可达 → `readAllConfig` 必抛。因此这里不断言"成品配置"，
@@ -15,7 +15,7 @@
  */
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,6 +24,7 @@ import { apply } from '../host/index.ts';
 import { createStandaloneContext, type RegisteredRoute, type StandaloneLogger } from './context.ts';
 import { configPathsFor } from './options.ts';
 import { listenStandaloneServer, type StandaloneServer } from './server.ts';
+import { createRequestSecurity } from './request-security.ts';
 
 /** 静默日志器（插件仍会往 console 打少量 warn，那是它自己的诊断，这里不拦） */
 const silent: StandaloneLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
@@ -79,6 +80,55 @@ async function get(path: string): Promise<{ status: number; text: string; json: 
   const text = await response.text();
   return { status: response.status, text, json: () => JSON.parse(text) as unknown };
 }
+
+test('real plugin chat routes cannot bypass the standalone capability using encoded names', async () => {
+  const security = createRequestSecurity();
+  const protectedServer = await listenStandaloneServer({
+    routes: context?.routes ?? [],
+    logger: silent,
+    port: 0,
+    security,
+  });
+  try {
+    const prefix = `http://127.0.0.1:${protectedServer.port}/dsh-pet-7340/`;
+    for (const name of ['chat', '%63hat', 'ch%61t']) {
+      const response = await fetch(prefix + name + '?pet=main');
+      assert.equal(response.status, 403);
+      await response.text();
+    }
+    // 带上有效凭证时，编码后的名字会走到真实插件的参数校验，最终报 pet-required。
+    const response = await fetch(prefix + '%63hat', { headers: { 'X-DSH-Pet-Token': security.token } });
+    assert.equal(response.status, 200);
+    assert.equal(((await response.json()) as { reason: string }).reason, 'pet-required');
+  } finally {
+    await protectedServer.close();
+  }
+});
+
+test('config pet IDs: duplicate IDs return 400 without creating a user file', async (t) => {
+  const file = configPathsFor(packageRoot, home).userFile;
+  assert.equal(existsSync(file), false);
+  t.after(() => rmSync(file, { force: true }));
+  const pet = {
+    id: 'main',
+    name: 'Blue',
+    size: 240,
+    balanceEnabled: false,
+    display: 'web',
+    position: { corner: 'top-right', marginX: 20, marginY: 20 },
+  };
+  for (const id of ['main', ' main ']) {
+    const response = await fetch(`${base}/dsh-pet-7340/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pets: [pet, { ...pet, id, name: 'second' }] }),
+    });
+    assert.equal(response.status, 400);
+    const body = (await response.json()) as { error: string };
+    assert.match(body.error, /^invalid pet config:/);
+    assert.equal(existsSync(file), false);
+  }
+});
 
 describe('插件宿主半边在独立模式下跑起来了', () => {
   test('apply 注册了插件自己的路由前缀（独立模式不自己写路由表）', () => {

@@ -339,6 +339,23 @@ describe('readUserConfig —— 用户层读取必须容忍 JSONC 注释（保�
   });
 });
 
+describe('saveUserConfig —— 系统托盘开关（trayEnabled）', () => {
+  test('非法值整包拒绝（与其它全局布尔同口径，不静默丢用户输入）', () => {
+    assert.equal(saveUserConfig({ pets: PETS, trayEnabled: 'false' }, undefined), null);
+    assert.equal(saveUserConfig({ pets: PETS, trayEnabled: 0 }, undefined), null);
+  });
+
+  test('请求体没带 → 透传磁盘旧值（不得把用户关掉的托盘又打开）', () => {
+    const out = saveUserConfig({ pets: PETS }, { trayEnabled: false }) as Record<string, unknown>;
+    assert.equal(out.trayEnabled, false);
+  });
+
+  test('请求体带了 → 以请求体为准', () => {
+    const out = saveUserConfig({ pets: PETS, trayEnabled: false }, { trayEnabled: true }) as Record<string, unknown>;
+    assert.equal(out.trayEnabled, false);
+  });
+});
+
 describe('JSONC 配置读取：字符串中的注释标记与转义', () => {
   const prompts = [
     '请原样解释 // 示例 这段文字',
@@ -401,6 +418,83 @@ describe('JSONC 配置读取：字符串中的注释标记与转义', () => {
 });
 
 const PETS = BASE.pets;
+
+describe('saveUserConfig pet IDs', () => {
+  test('rejects repeated IDs before writing a configuration that would lose a pet', () => {
+    assert.equal(
+      saveOnce({
+        pets: [
+          { ...PETS[0], name: 'first' },
+          { ...PETS[0], name: 'second' },
+        ],
+      }),
+      null,
+    );
+  });
+
+  test('rejects IDs that collide after the same trimming used during reads', () => {
+    assert.equal(
+      saveOnce({
+        pets: [
+          { ...PETS[0], id: ' main ' },
+          { ...PETS[0], id: 'main' },
+        ],
+      }),
+      null,
+    );
+  });
+
+  test('rejects blank and non-string IDs instead of writing unreadable entries', () => {
+    for (const id of ['', '   ', '\t\n', 42, true, null, {}, ['main']]) {
+      assert.equal(saveOnce({ pets: [{ ...PETS[0], id }] }), null, JSON.stringify(id));
+    }
+  });
+
+  test('canonical IDs survive a save/read round trip, including Chinese IDs', () => {
+    const clean = saveOnce({
+      pets: [
+        { ...PETS[0], id: ' main ' },
+        { ...PETS[0], id: ' 副宠 ' },
+      ],
+    });
+    assert.ok(clean);
+    const pets = clean.pets as Record<string, unknown>[];
+    assert.deepEqual(
+      pets.map((p) => p.id),
+      ['main', '副宠'],
+    );
+    const paths = withBase({}, clean);
+    try {
+      assert.deepEqual(
+        (readAllConfig(paths).main.pets as Record<string, unknown>[]).map((p) => p.id),
+        ['main', '副宠'],
+      );
+    } finally {
+      rmSync(dirname(paths.defaultFile), { recursive: true, force: true });
+    }
+  });
+
+  test('keeps distinct case-sensitive IDs and allows matching display names', () => {
+    const clean = saveOnce({
+      pets: [
+        { ...PETS[0], id: 'Blue' },
+        { ...PETS[0], id: 'blue' },
+      ],
+    });
+    assert.ok(clean);
+    assert.deepEqual(
+      (clean.pets as Record<string, unknown>[]).map((p) => p.id),
+      ['Blue', 'blue'],
+    );
+  });
+
+  test('retains the ID length limit and path character restrictions', () => {
+    assert.ok(saveOnce({ pets: [{ ...PETS[0], id: 'a'.repeat(64) }] }));
+    for (const id of ['a'.repeat(65), 'pet/name', 'pet\\name', 'pet:name', 'pet\0name']) {
+      assert.equal(saveOnce({ pets: [{ ...PETS[0], id }] }), null);
+    }
+  });
+});
 
 describe('saveUserConfig —— 表情包配图开关（白名单 + 透传保留）', () => {
   test('两个配图开关随请求体写入', () => {
@@ -854,7 +948,7 @@ describe('readAllConfig —— 宠物固定合并（缺失取默认 / 非法回�
 });
 
 describe('syncUserConfigFromDefault —— 同步（内置默认原文写入用户层）', () => {
-  /** 默认文件写入给定原文；用户文件故意放在**尚不存在**的子目录里（验证父目录自建） */
+  /** 默认文件写入给定原文；用户文件故意放在尚不存在的子目录里（验证父目录自建） */
   function fixture(raw: string): { paths: ConfigPaths; dir: string } {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-pet-sync-test-'));
     const paths: ConfigPaths = {
@@ -893,7 +987,7 @@ describe('syncUserConfigFromDefault —— 同步（内置默认原文写入用�
     try {
       const before = readAllConfig(paths); // 无用户层：纯内置默认
       syncUserConfigFromDefault(paths);
-      // deepStrictEqual：值/结构必须完全一致。**不看键顺序**——用户层会走 mergePets 重建实例，
+      // deepStrictEqual：值/结构必须完全一致。不看键顺序——用户层会走 mergePets 重建实例，
       // 键序被规范化为 id 在前（纯外观差异；已用生产 assets/config.jsonc 实测确认值完全一致）。
       assert.deepStrictEqual(readAllConfig(paths), before);
     } finally {
@@ -917,9 +1011,9 @@ describe('syncUserConfigFromDefault —— 同步（内置默认原文写入用�
  * 文件宠物条目的基座 —— 「全局默认 + 种类可覆盖」。
  *
  * 判据：GLOBAL_DEFAULT_KEYS 那 9 个（physics / confineToScreen / 两个配图开关 / chatImageLimit /
- * chatMemoryRounds / whisperModel / chatModel / eventsRefreshSec）是**用户级「成本 / 偏好 /
- * 环境 / 节奏」参数**，用户层写了就对**所有条目**生效（含 pet pack）；种类文件自己写了就覆盖
- * 自己那份。其余顶层字段（人设 / 表情包 / 动画池 / 文案）的基座仍是**内置默认**——
+ * chatMemoryRounds / whisperModel / chatModel / eventsRefreshSec）是用户级「成本 / 偏好 /
+ * 环境 / 节奏」参数，用户层写了就对所有条目生效（含 pet pack）；种类文件自己写了就覆盖
+ * 自己那份。其余顶层字段（人设 / 表情包 / 动画池 / 文案）的基座仍是内置默认——
  * 一个种类一份人设、一份池、一个表情包目录，各写一份才是 pet pack 的意义。
  */
 describe('文件宠物条目 —— 全局默认（用户层作基座）+ 种类可覆盖', () => {

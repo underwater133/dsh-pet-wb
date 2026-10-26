@@ -80,4 +80,32 @@ export default defineConfig([
       '@deepseek-ai/dsh-llm': shim('dsh-llm'),
     },
   },
+  {
+    ...shared,
+    // 独立应用入口（`lib/app.js`）：一个 Electron 进程里跑「本机服务 + 插件宿主半边 + 桌面窗口」。
+    // 口径与 standalone 完全一致（三个 DSH 专有包同样换成替身），只多外部化 `electron` ——
+    // 它由 Electron 自己的模块加载器提供，进包反而会炸。
+    target: 'es2022',
+    entry: {
+      app: 'src/app/main.ts',
+    },
+    // zod 打进包：应用产物要做到「不依赖 node_modules」，而配置校验每次启动都要用。
+    // openai / @anthropic-ai/sdk 同样必须打进包：它们由 src/standalone/ai-transport.ts 顶层静态
+    // import，而 electron-builder 的 files 白名单不带 node_modules；留成外部裸 import 时，产物
+    // 一旦离开项目目录（例如解压到 Downloads）就会 ERR_MODULE_NOT_FOUND。
+    // @electron/get 与 @electron-internal/extract-zip 保持外部——它们只在「下载 Electron」时被
+    // 动态解析，应用模式永远不走那条路（见 src/host/helper-process.ts 的 import 注释）。
+    noExternal: [
+      /^@deepseek-ai\/(?:dsh-home-paths|dsh-credentials|dsh-llm)$/,
+      /^zod$/,
+      /^openai$/,
+      /^@anthropic-ai\/sdk$/,
+    ],
+    external: ['electron', /^@electron\//, /^node:/, /^@deepseek-ai\/(?!dsh-home-paths$|dsh-credentials$|dsh-llm$)/],
+    alias: {
+      '@deepseek-ai/dsh-home-paths': shim('dsh-home-paths'),
+      '@deepseek-ai/dsh-credentials': shim('dsh-credentials'),
+      '@deepseek-ai/dsh-llm': shim('dsh-llm'),
+    },
+  },
 ]);
