@@ -41,7 +41,7 @@ export function runCheck(logger: StandaloneLogger): number {
   const electron = resolveElectronPath();
   const lines: string[] = [
     `Node            ${process.version}（${process.platform}-${process.arch}）`,
-    `插件            dsh-pet@${packageVersion(packageRoot)}  ${packageRoot}`,
+    `插件            dsh-pet-wb@${packageVersion(packageRoot)}  ${packageRoot}`,
     `DSH_HOME        ${home}`,
     `用户配置        ${paths.userFile}${existsSync(paths.userFile) ? '' : '（不存在 → 用包内默认）'}`,
     `文件宠物目录    ${paths.petDir}${existsSync(paths.petDir) ? '' : '（不存在）'}`,

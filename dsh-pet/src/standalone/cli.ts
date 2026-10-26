@@ -198,7 +198,7 @@ async function run(logger: StandaloneLogger, options: { port: number; host: Host
     isWorkBuddy
       ? '===== dsh-pet x WorkBuddy（桌宠跟随 WorkBuddy 的工作状态）====='
       : '===== dsh-pet 独立模式（不需要 DSH）=====',
-    `  插件        dsh-pet@${packageVersion(packageRoot)}  ${packageRoot}`,
+    `  插件        dsh-pet-wb@${packageVersion(packageRoot)}  ${packageRoot}`,
     `  路由        http://127.0.0.1:${server.port}/dsh-pet-7340/`,
     `  配置        ${configSource}`,
     `  宠物        ${describePets(pets)}`,
