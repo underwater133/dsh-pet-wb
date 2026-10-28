@@ -33,8 +33,18 @@ function publicRead(req: IncomingMessage): boolean {
   if (['/standalone-ai/settings', '/shutdown'].includes(path)) return false;
   if (/^\/dsh-pet-\d+\/(?:whisper|chat)(?:\/|$)/.test(path)) return false;
   return (
-    ['/', '/health', '/standalone-ai/', '/standalone-ai/settings.js', '/standalone-ai/settings.css'].includes(path) ||
-    /^\/dsh-pet-\d+\//.test(path)
+    [
+      '/',
+      '/health',
+      '/standalone-ai/',
+      '/standalone-ai/settings.js',
+      '/standalone-ai/settings.css',
+      // 桌宠配置页：骨架、样式与浏览器产物。静态资源本身不含任何凭据，
+      // 真正需要令牌的是它背后对 /dsh-pet-7340/* 的读写。
+      '/standalone-ai/pets',
+      '/standalone-ai/pets.js',
+      '/standalone-ai/pets.css',
+    ].includes(path) || /^\/dsh-pet-\d+\//.test(path)
   );
 }
 

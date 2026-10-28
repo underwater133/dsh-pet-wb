@@ -108,4 +108,29 @@ export default defineConfig([
       '@deepseek-ai/dsh-llm': shim('dsh-llm'),
     },
   },
+  {
+    // 桌宠配置页的浏览器产物（`lib/settings-client.js`）：把 DSH 里的同一个 React 设置组件
+    // 挂到独立模式的本机页面上，避免两套界面各自漂移。与 client 那份的区别只有两点：
+    //   1) 这是一个真正的 IIFE（用 <script src> 直接加载，没有 __ModuleLoader__ 外壳）；
+    //   2) react / react-dom 必须打进包（独立模式没有宿主注入模块），因此这里 noExternal 它们。
+    // 产物由 src/standalone/pets-bundle.ts 从磁盘按需读取，不进 Node 侧的 bundle。
+    format: ['iife'],
+    platform: 'browser',
+    target: 'es2020',
+    dts: false,
+    outDir: 'lib',
+    clean: false,
+    entry: {
+      // 文件名同时是 server 侧读取的常量（PETS_BUNDLE_FILE），改名要两边一起改。
+      'settings-client': 'src/standalone/settings-client.ts',
+    },
+    // 子路径也要一起拉进来：`react-dom/client` 不匹配 `^react-dom$`，漏了会在产物里留成
+    // 外部全局变量（构建期只有一条 MISSING_GLOBAL_NAME 警告，运行期直接 undefined）。
+    noExternal: [/^react(\/|$)/, /^react-dom(\/|$)/, /^scheduler(\/|$)/],
+    // 让 react 走生产分支：少一层开发期告警判断，产物也小一半。
+    define: {
+      'process.env.NODE_ENV': '"production"',
+    },
+    outputOptions: { banner: ';' },
+  },
 ]);

@@ -15,6 +15,8 @@ import { boundedRequest, MAX_REQUEST_BYTES, MAX_SETTINGS_BYTES } from '../standa
 import { rejectRequest, type RequestSecurity } from '../standalone/request-security';
 import { settingsHandler, testHandler, type StandaloneServerOptions } from '../standalone/server';
 import { settingsPage, settingsScript, settingsStyle } from '../standalone/settings-page';
+import { petsBundle } from '../standalone/pets-bundle';
+import { petsViewHtml, petsViewStyle } from '../standalone/pets-view';
 
 /** 路由依赖：安全校验、AI 处理器与两个页面的数据源，全部注入以脱离 Electron 测试。 */
 interface RouterDeps {
@@ -65,14 +67,21 @@ export function startRouter(
         '/standalone-ai/': [settingsPage, 'text/html'],
         '/standalone-ai/settings.js': [settingsScript, 'text/javascript'],
         '/standalone-ai/settings.css': [settingsStyle, 'text/css'],
+        '/standalone-ai/pets': [petsViewHtml, 'text/html'],
+        '/standalone-ai/pets.css': [petsViewStyle, 'text/css'],
       };
       const asset = assets[url.pathname];
-      if (asset || url.pathname === '/health' || url.pathname === '/') {
+      const isBundle = url.pathname === '/standalone-ai/pets.js';
+      if (asset || isBundle || url.pathname === '/health' || url.pathname === '/') {
         if (method !== 'GET' && method !== 'HEAD') {
           rejectRequest(res, 405, '仅支持 GET');
           return;
         }
-        if (asset) sendText(res, 200, asset[1], asset[0]);
+        if (isBundle) {
+          const body = petsBundle();
+          if (body) sendText(res, 200, 'text/javascript', body);
+          else rejectRequest(res, 503, '桌宠配置页的浏览器产物缺失：请重新构建（npm run build）');
+        } else if (asset) sendText(res, 200, asset[1], asset[0]);
         else if (url.pathname === '/health')
           sendText(res, 200, 'application/json', JSON.stringify(deps.status(boundPort)));
         else sendText(res, 200, 'text/html', deps.landingPage(boundPort));

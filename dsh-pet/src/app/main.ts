@@ -231,8 +231,11 @@ function landingPage(port: number): string {
   <h2>配置文件</h2>
   <p><code>${escapeHtml(String(info.configFile))}</code></p>
   <p>改完配置后从托盘退出、重新打开应用即可生效（本模式没有「重载配置」菜单）。</p>
-  <h2>AI 设置</h2>
-  <p>AI 模型与密钥的配置页需要令牌，请<strong>右键桌宠 →「打开 AI 设置」</strong>，会直接打开已授权的页面。</p>
+  <h2>设置</h2>
+  <p>同一个配置页有两部分：<strong>模型连接</strong>（API 地址 / 模型 / 密钥），以及
+  <strong>桌宠配置</strong>（大小、位置、多开、开关、字体、物理手感，复用 DSH 里的同一个界面）。
+  两者都需要令牌，请<strong>右键桌宠 →「打开 AI 设置」</strong>，会直接打开已授权的页面，
+  再从页面底部的「桌宠外观与手感」进入配置页。</p>
   <h2>状态</h2>
   <p><a href="/health">/health</a> · <a href="/standalone-ai/">配置页（未授权时读写会返回 403）</a></p>
 </main></body></html>`;

@@ -24,7 +24,7 @@
 
 ## 🔧 本仓库改了什么
 
-相对上游 **25 个文件、+2016 / −426**，集中在三块：
+相对上游 **36 个文件、+2415 / −431**，集中在四块：
 
 ### 1. WorkBuddy 工作状态联动（新增 `dsh-pet/src/workbuddy/`）
 
@@ -71,6 +71,29 @@
 
 > 同步到 `dfc0396` 后，上游已自带托盘退出、日志落盘、托盘开关、单进程桌面应用与音效；本 fork 不再维护这些的本地实现。
 
+### 4. 独立模式也有「桌宠配置」页（复用 DSH 原组件，不是复刻）
+
+独立模式下没有 DSH 的设置面板，`client/settings.ts` 那个 1900 多行的 React 组件就没人渲染——于是大小 / 位置 / 多开 / 物理手感在独立模式里"没有界面"。本仓库把它挂到本机页面上：
+
+| 路由 | 内容 |
+| --- | --- |
+| `/standalone-ai/` | 模型连接（协议 / 地址 / 模型 / 密钥）、自动碎碎念 |
+| `/standalone-ai/pets` | **桌宠配置**——`makePetConfigSection` 原样复用（AI 页底部有链接跳过来，令牌随地址片段传递） |
+
+关键点是**不复制字段**。`makePetConfigSection(rt)` 本来就是工厂注入式（`h` / hooks / `t` 全由外部传入），挂载器（`standalone/settings-client.ts`）只补三件组件不知道的事：
+
+- 给 `/dsh-pet-7340/*` 的同源请求加 `X-DSH-Pet-Token`（DSH 里同源即授权，独立模式要令牌）；
+- 用 `client/settings` 自带的 `zh` 字典当 `t`（没有 locale 服务）；
+- 把 `petBridge.reload` 接到「重挂一次」，并喂满 `petBridge.template`——`addPet` 靠它取模板，缺了就静默不新增。
+
+配套的三处约束：
+
+- **CSP 按路由分开**：React 用内联 style 与运行时 `<style>`，所以只有 `/standalone-ai/pets*` 放开 `style-src 'unsafe-inline'`；带密钥输入的 AI 页仍是 `default-src 'none'` + `style-src 'self'`；
+- **主题变量**：组件内部走 `--dsw-alias-*`，由 `standalone/pets-view.ts` 映射到本机配色；`pets-view.test.ts` 会从 `client/settings.ts` 源码抓全部 `--dsw-*` 去比对映射，上游新增 token 时测试先红；
+- **产物独立**：`lib/settings-client.js`（react + react-dom 打进包，约 280 KB）由 `standalone/pets-bundle.ts` 按需从磁盘读，不进 Node 侧 bundle，也不影响 DSH 里那份 external react 的 `lib/client.js`。
+
+这么做的收益是维护面：上游改字段、改文案、改校验，这里**不用跟着改**（第一版是手写 390 行表单，上游每加一个 `pets[]` 字段，保存时就会把它按默认值写回——静默丢用户手改的值）。
+
 ## 🚀 快速开始（Windows + WorkBuddy）
 
 前置：Node.js ≥ 18。
@@ -92,6 +115,8 @@ node scripts\install-workbuddy-hooks.mjs
 
 首次启动会按需下载 Electron（约 100MB，缓存在 `~/.dsh/electron/`），网络受限可设 `DSH_PET_ELECTRON_MIRROR`。
 
+**配置**：右键桌宠 →「打开 AI 设置」填模型连接；页面底部「桌宠外观与手感」进桌宠配置（大小 / 位置 / 多开 / 物理手感，与 DSH 里是同一个界面）。
+
 **验证联动是否生效**：在 WorkBuddy 里随便发一句话，然后看
 
 ```powershell
@@ -109,13 +134,13 @@ node scripts\install-workbuddy-hooks.mjs
 **不可用（独立模式下刻意不做）**：
 
 - **余额**：WorkBuddy 的积分消耗只存在于服务端，本地没有明文留底，取它必须带登录态调未公开的计费接口。这块**故意不做**，余额路由照旧返回 `unsupported` 的结构化失败，不假装成功；
-- **对话 / 碎碎念**：依赖 DSH 的模型通道，独立模式下返回 `provider-missing`；
+- **对话 / 碎碎念**：走本机「模型连接」页里自建的那个端点（独立模式不接 DSH 的模型通道）；没配置或没启用时返回 `provider-missing`；
 - **DSH 系统通知**：同上。
 
 **其他要知道的**：
 
 - hook 属于 WorkBuddy 的未公开实现，随版本可能变化；每次 hook 都会起一个 node 进程，本机实测约 180ms/次（其中约 150ms 是 node 启动本身）；
-- 配置与上游同一份（`$DSH_HOME/dsh-pet/main-config.jsonc` → 包内默认），设置页「桌宠配置」可改大小/位置/多开/显示位置；
+- 配置与上游同一份（`$DSH_HOME/dsh-pet/main-config.jsonc` → 包内默认）；独立模式的可视化配置在 `/standalone-ai/pets`（见上文第 4 条），动画池、表情包等高级字段仍需直接编辑该文件；
 - 桌面窗与浏览器 overlay 共用同一份素材与纯逻辑，`display` 决定每只宠物在哪一端出现；纯 `web` 模式不会启动 Electron，也就没有托盘，用 `stop-pet.vbs` 停止；
 - 多开同一台机器只会跑一份服务，第二只会被判「已经在运行」并跳过（避免抢端口、互踩 Electron 缓存）。
 

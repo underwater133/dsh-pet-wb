@@ -16,6 +16,8 @@ import { boundedRequest, MAX_REQUEST_BYTES, MAX_SETTINGS_BYTES } from './request
 import { publicSettings, validateSettings } from './settings';
 import type { StandaloneSettingsService } from './settings';
 import { settingsPage, settingsScript, settingsStyle } from './settings-page';
+import { petsBundle } from './pets-bundle';
+import { petsViewHtml, petsViewStyle } from './pets-view';
 
 /** 默认监听端口。 */
 export const DEFAULT_STANDALONE_PORT = 3080;
@@ -65,13 +67,18 @@ function sendJson(res: ServerResponse, status: number, body: unknown, cors = fal
   });
   res.end(payload);
 }
-/** 回静态资源，附带只允许同源脚本与样式的 CSP。 */
-function sendAsset(res: ServerResponse, body: string, type: string): void {
+/**
+ * 回静态资源，附带 CSP。
+ *
+ * 桌宠配置页（`/standalone-ai/pets*`）单独放开 `style-src 'unsafe-inline'`：复用自 DSH 的 React
+ * 组件用内联 style 与运行时注入的 <style> 排版，而带密钥输入的 AI 页保持严格策略不放宽。
+ */
+function sendAsset(res: ServerResponse, body: string, type: string, pathname = ''): void {
+  const stylePolicy = pathname.startsWith('/standalone-ai/pets') ? " 'unsafe-inline'" : '';
   res.writeHead(200, {
     'content-type': `${type}; charset=utf-8`,
     'content-length': Buffer.byteLength(body),
-    'content-security-policy':
-      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    'content-security-policy': `default-src 'none'; script-src 'self'; style-src 'self'${stylePolicy}; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
     'x-frame-options': 'DENY',
   });
   res.end(body);
@@ -216,14 +223,25 @@ function dispatch(
       '/standalone-ai/': [settingsPage, 'text/html'],
       '/standalone-ai/settings.js': [settingsScript, 'text/javascript'],
       '/standalone-ai/settings.css': [settingsStyle, 'text/css'],
+      '/standalone-ai/pets': [petsViewHtml, 'text/html'],
+      '/standalone-ai/pets.css': [petsViewStyle, 'text/css'],
     };
+    // 桌宠配置页的浏览器产物从磁盘读（含 react/react-dom 与复用自 DSH 的设置组件）。
+    const isBundle = pathname === '/standalone-ai/pets.js';
     const asset = assets[pathname];
-    if (asset) {
+    if (asset || isBundle) {
       if (method !== 'GET' && method !== 'HEAD') {
         rejectRequest(res, 405, '仅支持 GET');
         return;
       }
-      sendAsset(res, asset[0], asset[1]);
+      if (isBundle) {
+        const body = petsBundle();
+        if (!body) {
+          rejectRequest(res, 503, '桌宠配置页的浏览器产物缺失：请重新构建（npm run build）');
+          return;
+        }
+        sendAsset(res, body, 'text/javascript', pathname);
+      } else if (asset) sendAsset(res, asset[0], asset[1], pathname);
       return;
     }
     if (pathname === '/standalone-ai/settings') {

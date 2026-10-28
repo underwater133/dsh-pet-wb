@@ -284,5 +284,5 @@ if (-not $newRt) {
 }
 
 Say "已启动：pid $($newRt.pid)，端口 $($newRt.port) → http://127.0.0.1:$($newRt.port)/"
-Say "面板（AI 设置）：$($newRt.settingsUrl)"
+Say "设置（AI 连接 / 桌宠外观）：$($newRt.settingsUrl)"
 Say '退出：双击「停止桌宠.vbs」，或 Ctrl+C 结束终端里的进程。'
